@@ -67,6 +67,8 @@ export function resolveFreeBallAction(
   actor: PlayerModel,
   clickedTile: TileCoordinate,
 ): RuleResolution {
+  const actionTile = getActionReferenceTile(actor);
+
   // Free-ball resolution is intentionally split into:
   // 1. ownership/protection
   // 2. direct kick on the ball tile
@@ -85,11 +87,11 @@ export function resolveFreeBallAction(
     return executeKick(state, actor);
   }
 
-  if (!isImmediateFreeBallTrapLine(actor.currentTile, state.ball.tile, clickedTile)) {
+  if (!isImmediateFreeBallTrapLine(actionTile, state.ball.tile, clickedTile)) {
     return invalidUnhandled(state, 'Click is not a free-ball action.');
   }
 
-  const actorToBall = getDirectionBetweenTiles(actor.currentTile, state.ball.tile);
+  const actorToBall = getDirectionBetweenTiles(actionTile, state.ball.tile);
   const ballToClick = getDirectionBetweenTiles(state.ball.tile, clickedTile);
 
   if (!actorToBall || !ballToClick) {
@@ -141,9 +143,10 @@ export function executeKick(
   state: GameState,
   actor: PlayerModel,
 ): RuleResolution {
-  const direction = getDirectionBetweenTiles(actor.currentTile, state.ball.tile);
+  const actionTile = getActionReferenceTile(actor);
+  const direction = getDirectionBetweenTiles(actionTile, state.ball.tile);
 
-  if (!direction || !isOrthogonallyAdjacent(actor.currentTile, state.ball.tile)) {
+  if (!direction || !isOrthogonallyAdjacent(actionTile, state.ball.tile)) {
     return invalidHandled(state, 'Player must stand orthogonally beside the ball to kick.');
   }
 
@@ -155,17 +158,19 @@ export function executeTrap(
   actor: PlayerModel,
   clickedTile: TileCoordinate,
 ): RuleResolution {
+  const actionTile = getActionReferenceTile(actor);
+
   if (!isTileInBounds(clickedTile, state.pitchSize)) {
     return invalidHandled(state, 'Trap target is out of bounds.');
   }
 
-  const actorToBall = getDirectionBetweenTiles(actor.currentTile, state.ball.tile);
+  const actorToBall = getDirectionBetweenTiles(actionTile, state.ball.tile);
 
   if (!actorToBall) {
     return invalidHandled(state, 'Trap requires the player, ball, and target tile to align.');
   }
 
-  if (!isOrthogonallyAdjacent(actor.currentTile, state.ball.tile)) {
+  if (!isOrthogonallyAdjacent(actionTile, state.ball.tile)) {
     return invalidHandled(state, 'Trap requires the player, ball, and target tile to align.');
   }
 
@@ -317,6 +322,10 @@ function getPlayerById(
   actorId: ActorId,
 ): PlayerModel | undefined {
   return state.players.find((player) => player.id === actorId);
+}
+
+function getActionReferenceTile(player: PlayerModel): TileCoordinate {
+  return player.nextTile ?? player.currentTile;
 }
 
 function isDirectBallClick(

@@ -46,6 +46,34 @@ export class Player {
     this.targetTile = { ...tile };
   }
 
+  getIntendedNextTile(): TileCoordinate | null {
+    if (this.nextTile) {
+      return { ...this.nextTile };
+    }
+
+    if (
+      this.currentTile.x === this.targetTile.x &&
+      this.currentTile.z === this.targetTile.z
+    ) {
+      return null;
+    }
+
+    return {
+      x:
+        this.currentTile.x + Math.sign(this.targetTile.x - this.currentTile.x),
+      z:
+        this.currentTile.z + Math.sign(this.targetTile.z - this.currentTile.z),
+    };
+  }
+
+  beginStep(tile: TileCoordinate): void {
+    this.nextTile = { ...tile };
+  }
+
+  cancelStepIfBlocked(): void {
+    this.nextTile = null;
+  }
+
   applyModel(model: PlayerModel): void {
     this.currentTile = { ...model.currentTile };
     this.nextTile = model.nextTile ? { ...model.nextTile } : null;
@@ -66,14 +94,11 @@ export class Player {
     let remainingDistance = this.speedTilesPerSecond * deltaSeconds;
 
     while (remainingDistance > 0) {
-      const destinationTile = this.nextTile ?? this.getNextStepTile();
+      const destinationTile = this.nextTile;
 
       if (!destinationTile) {
         return;
       }
-
-      this.nextTile = destinationTile;
-
       const destination = tileCoordinateToWorldPosition(destinationTile);
       const deltaX = destination.x - this.renderPosition.x;
       const deltaZ = destination.z - this.renderPosition.z;
@@ -105,22 +130,6 @@ export class Player {
       0,
       this.renderPosition.z,
     );
-  }
-
-  private getNextStepTile(): TileCoordinate | null {
-    if (
-      this.currentTile.x === this.targetTile.x &&
-      this.currentTile.z === this.targetTile.z
-    ) {
-      return null;
-    }
-
-    return {
-      x:
-        this.currentTile.x + Math.sign(this.targetTile.x - this.currentTile.x),
-      z:
-        this.currentTile.z + Math.sign(this.targetTile.z - this.currentTile.z),
-    };
   }
 
   private finishStep(tile: TileCoordinate, position: WorldPosition): void {

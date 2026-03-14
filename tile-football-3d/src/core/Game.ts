@@ -17,8 +17,20 @@ import {
 } from '../world/Pitch';
 
 const LOCAL_PLAYER_ID: ActorId = 'local-player';
+const OPPONENT_PLAYER_ID: ActorId = 'opponent-player';
 const PLAYER_TILES_PER_SECOND = 2;
 const MAX_DEBUG_LINES = 8;
+
+type MoveIntent = {
+  playerId: ActorId;
+  currentTile: { x: number; z: number };
+  nextTile: { x: number; z: number };
+};
+
+type MovementResolution = {
+  approvedIds: Set<ActorId>;
+  contestLogs: string[];
+};
 
 export class Game {
   private readonly container: HTMLElement;
@@ -27,14 +39,17 @@ export class Game {
   private readonly renderer: ReturnType<typeof createRenderer>;
   private readonly tilePicker: TilePicker;
   private readonly player: Player;
+  private readonly opponent: Player;
   private readonly ball: Ball;
   private readonly playerMesh: ReturnType<typeof createPlayerMesh>;
+  private readonly opponentMesh: ReturnType<typeof createPlayerMesh>;
   private readonly ballMesh: ReturnType<typeof createBallMesh>;
   private readonly debugOverlay: HTMLDivElement;
   private state: GameState;
   private debugLines: string[] = [];
   private animationFrameId: number | null = null;
   private previousFrameTime = 0;
+  private tickNumber = 0;
 
   constructor(container: HTMLElement) {
     this.container = container;
@@ -49,12 +64,20 @@ export class Game {
       1.8,
       PLAYER_TILES_PER_SECOND,
     );
-    this.state = createInitialGameState(this.player.toModel());
+    this.opponent = new Player(
+      OPPONENT_PLAYER_ID,
+      { x: Math.floor(FIELD_TILES_X / 2) + 2, z: Math.floor(FIELD_TILES_Y / 2) },
+      0.9,
+      1.8,
+      PLAYER_TILES_PER_SECOND,
+    );
+    this.state = createInitialGameState(this.player.toModel(), this.opponent.toModel());
     this.ball = new Ball(this.state.ball, 0.28);
     const room = createRoom();
     const pitch = createPitch();
 
     this.playerMesh = createPlayerMesh(this.player);
+    this.opponentMesh = createPlayerMesh(this.opponent);
     this.ballMesh = createBallMesh(this.ball);
     this.debugOverlay = this.createDebugOverlay();
     this.tilePicker = new TilePicker(
@@ -65,9 +88,16 @@ export class Game {
       this.handleTilePick,
     );
 
-    this.scene.add(room.root, pitch.root, this.playerMesh, this.ballMesh);
+    this.scene.add(
+      room.root,
+      pitch.root,
+      this.playerMesh,
+      this.opponentMesh,
+      this.ballMesh,
+    );
 
     window.addEventListener('resize', this.handleResize);
+    window.addEventListener('keydown', this.handleKeyDown);
   }
 
   start(): void {
@@ -82,6 +112,7 @@ export class Game {
     }
 
     window.removeEventListener('resize', this.handleResize);
+    window.removeEventListener('keydown', this.handleKeyDown);
     this.tilePicker.dispose();
     this.renderer.dispose();
     this.debugOverlay.remove();
@@ -96,12 +127,33 @@ export class Game {
     this.render();
   };
 
+  private readonly handleKeyDown = (event: KeyboardEvent): void => {
+    if (event.key !== 'Tab') {
+      return;
+    }
+
+    event.preventDefault();
+    const nextActivePlayerId =
+      this.state.activePlayerId === LOCAL_PLAYER_ID
+        ? OPPONENT_PLAYER_ID
+        : LOCAL_PLAYER_ID;
+
+    this.state = {
+      ...this.buildGameState(),
+      activePlayerId: nextActivePlayerId,
+    };
+    this.logDebug(`active player -> ${nextActivePlayerId}`);
+  };
+
   private tick = (): void => {
     const now = performance.now();
     const deltaSeconds = (now - this.previousFrameTime) / 1000;
     this.previousFrameTime = now;
 
+    this.tickNumber += 1;
+    this.resolvePlayerMovementContests();
     this.player.update(deltaSeconds);
+    this.opponent.update(deltaSeconds);
     this.ball.update(deltaSeconds);
     this.state = this.buildGameState();
     this.syncWorldMeshes();
@@ -112,34 +164,37 @@ export class Game {
 
   private readonly handleTilePick = (tile: { x: number; z: number }): void => {
     const state = this.buildGameState();
+    const activePlayerId = state.activePlayerId;
+    const activePlayer = this.getPlayerInstance(activePlayerId);
 
     if (isTileInBounds(tile)) {
-      const resolution = resolveClick(state, LOCAL_PLAYER_ID, tile);
+      const resolution = resolveClick(state, activePlayerId, tile);
 
       if (resolution.valid) {
         this.applyGameState(resolution.state);
         this.logDebug(
-          `ball ${resolution.action} @ (${tile.x},${tile.z}) ${resolution.reason ?? 'ok'}`,
+          `${activePlayerId} ball ${resolution.action} @ (${tile.x},${tile.z}) ${resolution.reason ?? 'ok'}`,
         );
       } else if (resolution.handled) {
         this.logDebug(
-          `ball ${resolution.action} @ (${tile.x},${tile.z}) ${resolution.reason ?? 'ok'}`,
+          `${activePlayerId} ball ${resolution.action} @ (${tile.x},${tile.z}) ${resolution.reason ?? 'ok'}`,
         );
       }
     }
 
-    if (isTileOccupiedByOtherPlayer(tile, state, LOCAL_PLAYER_ID)) {
-      this.logDebug(`move blocked @ (${tile.x},${tile.z}) occupied`);
+    if (isTileOccupiedByOtherPlayer(tile, state, activePlayerId)) {
+      this.logDebug(`${activePlayerId} move blocked @ (${tile.x},${tile.z}) occupied`);
       return;
     }
 
-    this.player.setTargetTile(tile);
+    activePlayer.setTargetTile(tile);
     this.state = this.buildGameState();
-    this.logDebug(`move target -> (${tile.x},${tile.z})`);
+    this.logDebug(`${activePlayerId} move target -> (${tile.x},${tile.z})`);
   };
 
   private syncWorldMeshes(): void {
     this.player.syncMesh(this.playerMesh);
+    this.opponent.syncMesh(this.opponentMesh);
     this.ball.syncMesh(this.ballMesh);
   }
 
@@ -149,8 +204,8 @@ export class Game {
 
   private buildGameState(): GameState {
     return {
-      players: [this.player.toModel()],
-      activePlayerId: LOCAL_PLAYER_ID,
+      players: [this.player.toModel(), this.opponent.toModel()],
+      activePlayerId: this.state.activePlayerId,
       ball: this.ball.getModel(),
       pitchSize: {
         columns: FIELD_TILES_X,
@@ -164,8 +219,9 @@ export class Game {
     this.ball.setModel(state.ball);
 
     const localPlayer = state.players.find((player) => player.id === LOCAL_PLAYER_ID);
+    const opponentPlayer = state.players.find((player) => player.id === OPPONENT_PLAYER_ID);
 
-    if (!localPlayer) {
+    if (!localPlayer || !opponentPlayer) {
       return;
     }
 
@@ -175,6 +231,14 @@ export class Game {
       !areTilesEqual(localPlayer.targetTile, this.player.targetTile)
     ) {
       this.player.applyModel(localPlayer);
+    }
+
+    if (
+      !areTilesEqual(opponentPlayer.currentTile, this.opponent.currentTile) ||
+      !areTilesEqualOrBothNull(opponentPlayer.nextTile, this.opponent.nextTile) ||
+      !areTilesEqual(opponentPlayer.targetTile, this.opponent.targetTile)
+    ) {
+      this.opponent.applyModel(opponentPlayer);
     }
   }
 
@@ -207,12 +271,18 @@ export class Game {
 
   private updateDebugOverlay(): void {
     const playerModel = this.player.toModel();
+    const opponentModel = this.opponent.toModel();
     const ballModel = this.ball.getModel();
 
     const lines = [
-      `player current: (${playerModel.currentTile.x},${playerModel.currentTile.z})`,
-      `player next   : ${formatTile(playerModel.nextTile)}`,
-      `player target : (${playerModel.targetTile.x},${playerModel.targetTile.z})`,
+      `tick         : ${this.tickNumber}`,
+      `active       : ${this.state.activePlayerId}`,
+      `p1 current   : (${playerModel.currentTile.x},${playerModel.currentTile.z})`,
+      `p1 next      : ${formatTile(playerModel.nextTile)}`,
+      `p1 target    : (${playerModel.targetTile.x},${playerModel.targetTile.z})`,
+      `p2 current   : (${opponentModel.currentTile.x},${opponentModel.currentTile.z})`,
+      `p2 next      : ${formatTile(opponentModel.nextTile)}`,
+      `p2 target    : (${opponentModel.targetTile.x},${opponentModel.targetTile.z})`,
       `ball state    : ${ballModel.state}`,
       `ball tile     : (${ballModel.tile.x},${ballModel.tile.z})`,
       `controller    : ${ballModel.controllerId ?? 'none'}`,
@@ -229,6 +299,36 @@ export class Game {
     this.debugLines = [message, ...this.debugLines].slice(0, MAX_DEBUG_LINES);
     this.updateDebugOverlay();
   }
+
+  private resolvePlayerMovementContests(): void {
+    const players = [this.player, this.opponent];
+    const snapshot = players.map((player) => player.toModel());
+    const intents = collectMoveIntents(players);
+    const resolution = resolveApprovedMoveIds(intents, snapshot, this.tickNumber);
+
+    for (const contestLog of resolution.contestLogs) {
+      this.logDebug(contestLog);
+    }
+
+    for (const player of players) {
+      const intent = intents.find((entry) => entry.playerId === player.id);
+
+      if (!intent) {
+        player.cancelStepIfBlocked();
+        continue;
+      }
+
+      if (resolution.approvedIds.has(player.id)) {
+        player.beginStep(intent.nextTile);
+      } else {
+        player.cancelStepIfBlocked();
+      }
+    }
+  }
+
+  private getPlayerInstance(actorId: ActorId): Player {
+    return actorId === LOCAL_PLAYER_ID ? this.player : this.opponent;
+  }
 }
 
 function isTileOccupiedByOtherPlayer(
@@ -241,7 +341,10 @@ function isTileOccupiedByOtherPlayer(
       return false;
     }
 
-    return areTilesEqual(player.currentTile, tile);
+    return (
+      areTilesEqual(player.currentTile, tile) ||
+      (player.nextTile ? areTilesEqual(player.nextTile, tile) : false)
+    );
   });
 }
 
@@ -264,7 +367,10 @@ function formatTile(tile: { x: number; z: number } | null): string {
   return tile ? `(${tile.x},${tile.z})` : '-';
 }
 
-function createInitialGameState(player: GameState['players'][number]): GameState {
+function createInitialGameState(
+  player: GameState['players'][number],
+  opponent: GameState['players'][number],
+): GameState {
   const initialBall: BallModel = {
     tile: { x: Math.floor(FIELD_TILES_X / 2), z: Math.floor(FIELD_TILES_Y / 2) },
     state: 'idle',
@@ -275,7 +381,7 @@ function createInitialGameState(player: GameState['players'][number]): GameState
   };
 
   return {
-    players: [player],
+    players: [player, opponent],
     activePlayerId: LOCAL_PLAYER_ID,
     ball: initialBall,
     pitchSize: {
@@ -283,4 +389,200 @@ function createInitialGameState(player: GameState['players'][number]): GameState
       rows: FIELD_TILES_Y,
     },
   };
+}
+
+function collectMoveIntents(players: Player[]): MoveIntent[] {
+  return players.flatMap((player) => {
+    const nextTile = player.getIntendedNextTile();
+
+    if (!nextTile) {
+      return [];
+    }
+
+    return [{
+      playerId: player.id,
+      currentTile: { ...player.currentTile },
+      nextTile,
+    }];
+  });
+}
+
+function resolveApprovedMoveIds(
+  intents: MoveIntent[],
+  players: GameState['players'],
+  tickNumber: number,
+): MovementResolution {
+  const approvedIds = new Set<ActorId>();
+  const blockedIds = new Set<ActorId>();
+  const contestLogs: string[] = [];
+  const intentById = new Map(intents.map((intent) => [intent.playerId, intent]));
+  const contestedGroups = groupIntentsByDestination(intents);
+
+  for (const intent of intents) {
+    if (isTileReservedByActiveMover(intent.nextTile, players, intent.playerId)) {
+      blockedIds.add(intent.playerId);
+    }
+  }
+
+  for (let index = 0; index < intents.length; index += 1) {
+    for (let otherIndex = index + 1; otherIndex < intents.length; otherIndex += 1) {
+      const left = intents[index];
+      const right = intents[otherIndex];
+
+      if (isSwapConflict(left, right)) {
+        blockedIds.add(left.playerId);
+        blockedIds.add(right.playerId);
+      }
+    }
+  }
+
+  for (const intent of intents) {
+    if (blockedIds.has(intent.playerId)) {
+      continue;
+    }
+
+    if (isTileCommittedOccupied(intent.nextTile, players, intent.playerId)) {
+      const occupant = getCommittedOccupant(intent.nextTile, players, intent.playerId);
+      const occupantIntent = occupant ? intentById.get(occupant.id) : undefined;
+
+      if (!occupantIntent || areTilesEqual(occupantIntent.nextTile, intent.nextTile)) {
+        blockedIds.add(intent.playerId);
+      }
+    }
+  }
+
+  for (const group of contestedGroups.values()) {
+    const eligible = group.filter((intent) => !blockedIds.has(intent.playerId));
+
+    if (eligible.length <= 1) {
+      continue;
+    }
+
+    const winner = resolveDestinationContest(eligible, tickNumber);
+    contestLogs.push(
+      `contest @ (${winner.nextTile.x},${winner.nextTile.z}) winner=${winner.playerId}`,
+    );
+
+    for (const intent of eligible) {
+      if (intent.playerId !== winner.playerId) {
+        blockedIds.add(intent.playerId);
+      }
+    }
+  }
+
+  for (const intent of intents) {
+    if (!blockedIds.has(intent.playerId)) {
+      approvedIds.add(intent.playerId);
+    }
+  }
+
+  return {
+    approvedIds,
+    contestLogs,
+  };
+}
+
+function groupIntentsByDestination(intents: MoveIntent[]): Map<string, MoveIntent[]> {
+  const groups = new Map<string, MoveIntent[]>();
+
+  for (const intent of intents) {
+    const key = tileKey(intent.nextTile);
+    const existing = groups.get(key);
+
+    if (existing) {
+      existing.push(intent);
+      continue;
+    }
+
+    groups.set(key, [intent]);
+  }
+
+  return groups;
+}
+
+function isSwapConflict(left: MoveIntent, right: MoveIntent): boolean {
+  return (
+    areTilesEqual(left.nextTile, right.currentTile) &&
+    areTilesEqual(right.nextTile, left.currentTile)
+  );
+}
+
+function resolveDestinationContest(
+  intents: MoveIntent[],
+  tickNumber: number,
+): MoveIntent {
+  return intents.reduce((winner, candidate) => {
+    const winnerKey = computeDeterministicTieBreakKey(
+      winner.playerId,
+      tickNumber,
+      winner.nextTile,
+    );
+    const candidateKey = computeDeterministicTieBreakKey(
+      candidate.playerId,
+      tickNumber,
+      candidate.nextTile,
+    );
+
+    if (candidateKey !== winnerKey) {
+      return candidateKey < winnerKey ? candidate : winner;
+    }
+
+    return candidate.playerId < winner.playerId ? candidate : winner;
+  });
+}
+
+function computeDeterministicTieBreakKey(
+  playerId: ActorId,
+  tickNumber: number,
+  tile: { x: number; z: number },
+): number {
+  const input = `${tickNumber}:${tile.x}:${tile.z}:${playerId}`;
+  let hash = 2166136261;
+
+  for (let index = 0; index < input.length; index += 1) {
+    hash ^= input.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+
+  return hash >>> 0;
+}
+
+function isTileCommittedOccupied(
+  tile: { x: number; z: number },
+  players: GameState['players'],
+  actorId: ActorId,
+): boolean {
+  return Boolean(getCommittedOccupant(tile, players, actorId));
+}
+
+function getCommittedOccupant(
+  tile: { x: number; z: number },
+  players: GameState['players'],
+  actorId: ActorId,
+): GameState['players'][number] | undefined {
+  return players.find((player) => {
+    if (player.id === actorId) {
+      return false;
+    }
+
+    return areTilesEqual(player.currentTile, tile);
+  });
+}
+
+function isTileReservedByActiveMover(
+  tile: { x: number; z: number },
+  players: GameState['players'],
+  actorId: ActorId,
+): boolean {
+  return players.some((player) => {
+    if (player.id === actorId || !player.nextTile) {
+      return false;
+    }
+
+    return areTilesEqual(player.nextTile, tile);
+  });
+}
+
+function tileKey(tile: { x: number; z: number }): string {
+  return `${tile.x}:${tile.z}`;
 }

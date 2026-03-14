@@ -1,8 +1,8 @@
 import { Raycaster, Vector2 } from 'three';
 import type { TileCoordinate } from '../world/Pitch';
-import { worldPositionToTileCoordinate } from '../world/Pitch';
 
 type TilePickHandler = (tile: TileCoordinate) => void;
+type TileMapper = (point: { x: number; z: number }) => TileCoordinate | null;
 
 export class TilePicker {
   private readonly domElement: HTMLElement;
@@ -10,17 +10,20 @@ export class TilePicker {
   private readonly raycaster = new Raycaster();
   private readonly pointer = new Vector2();
   private readonly onPick: TilePickHandler;
+  private readonly mapPointToTile: TileMapper;
   private readonly target: object;
 
   constructor(
     domElement: HTMLElement,
     camera: object,
     target: object,
+    mapPointToTile: TileMapper,
     onPick: TilePickHandler,
   ) {
     this.domElement = domElement;
     this.camera = camera;
     this.target = target;
+    this.mapPointToTile = mapPointToTile;
     this.onPick = onPick;
 
     this.domElement.addEventListener('click', this.handleClick);
@@ -44,7 +47,10 @@ export class TilePicker {
       return;
     }
 
-    const tile = worldPositionToTileCoordinate(hit.point.x, hit.point.z);
+    const tile = this.mapPointToTile({
+      x: hit.point.x,
+      z: hit.point.z,
+    });
 
     if (!tile) {
       return;

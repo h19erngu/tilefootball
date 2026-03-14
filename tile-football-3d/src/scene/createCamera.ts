@@ -1,14 +1,14 @@
 import { OrthographicCamera } from 'three';
 
-const CAMERA_FRUSTUM_SIZE = 18;
+const CAMERA_FRUSTUM_SIZE = 20;
 
 export function createCamera(container: HTMLElement) {
   const aspect = getAspectRatio(container);
   const camera = new OrthographicCamera();
 
   updateCameraFrustum(camera, aspect);
-  camera.position.set(12, 12, 12);
-  camera.lookAt(0, 0, 0);
+  camera.position.set(13, 15, 13);
+  camera.lookAt(1.2, 0, 1.1);
 
   return camera;
 }
@@ -23,7 +23,7 @@ export function updateCameraFrustum(camera: { left: number; right: number; top: 
   camera.bottom = -halfHeight;
   camera.near = 0.1;
   camera.far = 100;
-  camera.zoom = 1;
+  camera.zoom = 1.08;
   camera.updateProjectionMatrix();
 }
 

@@ -1,6 +1,14 @@
-import { BoxGeometry, MeshStandardMaterial, Mesh } from 'three';
+import {
+  BoxGeometry,
+  CylinderGeometry,
+  Group,
+  Mesh,
+  MeshStandardMaterial,
+  SphereGeometry,
+} from 'three';
+import type { PlayerModel } from '../core/GameState';
 import type { TileCoordinate, WorldPosition } from './Pitch';
-import { tileCoordinateToWorldPosition } from './Pitch';
+import { TILE_SIZE, tileCoordinateToWorldPosition } from './Pitch';
 
 type PositionableMesh = {
   position: {
@@ -9,20 +17,23 @@ type PositionableMesh = {
 };
 
 export class Player {
+  public readonly id: string;
   public readonly width: number;
   public readonly height: number;
   public readonly speedTilesPerSecond: number;
   public currentTile: TileCoordinate;
   public targetTile: TileCoordinate;
   private renderPosition: WorldPosition;
-  private nextTile: TileCoordinate | null = null;
+  public nextTile: TileCoordinate | null = null;
 
   constructor(
+    id: string,
     startTile: TileCoordinate,
     width: number,
     height: number,
     speedTilesPerSecond = 4,
   ) {
+    this.id = id;
     this.currentTile = { ...startTile };
     this.targetTile = { ...startTile };
     this.width = width;
@@ -33,6 +44,22 @@ export class Player {
 
   setTargetTile(tile: TileCoordinate): void {
     this.targetTile = { ...tile };
+  }
+
+  applyModel(model: PlayerModel): void {
+    this.currentTile = { ...model.currentTile };
+    this.nextTile = model.nextTile ? { ...model.nextTile } : null;
+    this.targetTile = { ...model.targetTile };
+    this.renderPosition = tileCoordinateToWorldPosition(model.currentTile);
+  }
+
+  toModel(): PlayerModel {
+    return {
+      id: this.id,
+      currentTile: { ...this.currentTile },
+      nextTile: this.nextTile ? { ...this.nextTile } : null,
+      targetTile: { ...this.targetTile },
+    };
   }
 
   update(deltaSeconds: number): void {
@@ -50,7 +77,7 @@ export class Player {
       const destination = tileCoordinateToWorldPosition(destinationTile);
       const deltaX = destination.x - this.renderPosition.x;
       const deltaZ = destination.z - this.renderPosition.z;
-      const distanceToDestination = Math.hypot(deltaX, deltaZ);
+      const distanceToDestination = getTileTravelDistance(deltaX, deltaZ);
 
       if (distanceToDestination === 0) {
         this.finishStep(destinationTile, destination);
@@ -75,7 +102,7 @@ export class Player {
   syncMesh(mesh: PositionableMesh): void {
     mesh.position.set(
       this.renderPosition.x,
-      this.height / 2,
+      0,
       this.renderPosition.z,
     );
   }
@@ -88,17 +115,11 @@ export class Player {
       return null;
     }
 
-    if (this.currentTile.x !== this.targetTile.x) {
-      return {
-        x:
-          this.currentTile.x + Math.sign(this.targetTile.x - this.currentTile.x),
-        z: this.currentTile.z,
-      };
-    }
-
     return {
-      x: this.currentTile.x,
-      z: this.currentTile.z + Math.sign(this.targetTile.z - this.currentTile.z),
+      x:
+        this.currentTile.x + Math.sign(this.targetTile.x - this.currentTile.x),
+      z:
+        this.currentTile.z + Math.sign(this.targetTile.z - this.currentTile.z),
     };
   }
 
@@ -109,10 +130,107 @@ export class Player {
   }
 }
 
+function getTileTravelDistance(deltaX: number, deltaZ: number): number {
+  return Math.max(Math.abs(deltaX), Math.abs(deltaZ)) / TILE_SIZE;
+}
+
 export function createPlayerMesh(player: Player) {
-  const mesh = new Mesh(
-    new BoxGeometry(player.width, player.height, player.width),
-    new MeshStandardMaterial({ color: '#ef4444' }),
+  const mesh = new Group();
+  const robeMaterial = new MeshStandardMaterial({ color: '#ece7dc' });
+  const trimMaterial = new MeshStandardMaterial({ color: '#6c7486' });
+  const skinMaterial = new MeshStandardMaterial({ color: '#d3a07d' });
+  const hairMaterial = new MeshStandardMaterial({ color: '#7f5232' });
+  const wingMaterial = new MeshStandardMaterial({ color: '#f8fafc' });
+  const haloMaterial = new MeshStandardMaterial({
+    color: '#5cc7ff',
+    emissive: '#166d95',
+    emissiveIntensity: 0.45,
+  });
+
+  const shoes = new Mesh(
+    new BoxGeometry(player.width * 0.44, player.height * 0.06, player.width * 0.24),
+    new MeshStandardMaterial({ color: '#4e5563' }),
+  );
+  shoes.position.y = player.height * 0.04;
+
+  const legs = new Mesh(
+    new BoxGeometry(player.width * 0.36, player.height * 0.28, player.width * 0.22),
+    trimMaterial,
+  );
+  legs.position.y = player.height * 0.17;
+
+  const torso = new Mesh(
+    new BoxGeometry(player.width * 0.52, player.height * 0.34, player.width * 0.28),
+    robeMaterial,
+  );
+  torso.position.y = player.height * 0.44;
+
+  const chestTrim = new Mesh(
+    new BoxGeometry(player.width * 0.22, player.height * 0.34, player.width * 0.04),
+    trimMaterial,
+  );
+  chestTrim.position.set(0, player.height * 0.44, player.width * 0.13);
+
+  const head = new Mesh(
+    new SphereGeometry(player.width * 0.23, 18, 18),
+    skinMaterial,
+  );
+  head.position.y = player.height * 0.76;
+
+  const hair = new Mesh(
+    new BoxGeometry(player.width * 0.36, player.height * 0.12, player.width * 0.3),
+    hairMaterial,
+  );
+  hair.position.set(0, player.height * 0.84, -player.width * 0.02);
+
+  const jaw = new Mesh(
+    new BoxGeometry(player.width * 0.24, player.height * 0.08, player.width * 0.2),
+    skinMaterial,
+  );
+  jaw.position.set(0, player.height * 0.66, player.width * 0.02);
+
+  const leftArm = new Mesh(
+    new BoxGeometry(player.width * 0.12, player.height * 0.28, player.width * 0.12),
+    robeMaterial,
+  );
+  leftArm.position.set(-player.width * 0.2, player.height * 0.43, 0);
+  leftArm.rotation.z = 0.08;
+
+  const rightArm = leftArm.clone();
+  rightArm.position.x = player.width * 0.2;
+  rightArm.rotation.z = -0.08;
+
+  const leftWing = new Mesh(
+    new BoxGeometry(player.width * 0.12, player.height * 0.36, player.width * 0.04),
+    wingMaterial,
+  );
+  leftWing.position.set(-player.width * 0.33, player.height * 0.47, -player.width * 0.06);
+  leftWing.rotation.z = 0.42;
+
+  const rightWing = leftWing.clone();
+  rightWing.position.x = player.width * 0.33;
+  rightWing.rotation.z = -0.42;
+
+  const halo = new Mesh(
+    new CylinderGeometry(player.width * 0.22, player.width * 0.22, player.height * 0.02, 20),
+    haloMaterial,
+  );
+  halo.position.y = player.height * 1.01;
+  halo.rotation.x = Math.PI / 2;
+
+  mesh.add(
+    shoes,
+    legs,
+    torso,
+    chestTrim,
+    head,
+    hair,
+    jaw,
+    leftArm,
+    rightArm,
+    leftWing,
+    rightWing,
+    halo,
   );
 
   player.syncMesh(mesh);

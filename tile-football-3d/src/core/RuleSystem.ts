@@ -34,6 +34,8 @@ export type RuleResolution = {
 };
 
 const KICK_SHOOT_MAX_TILES = 6;
+const DEFAULT_BALL_ANIMATION_TIME_MS = 500;
+const MOVING_BALL_CATCHABLE_AFTER_TILES = 3;
 
 export function resolveClick(
   state: GameState,
@@ -48,10 +50,9 @@ export function resolveClick(
 
   if (state.ball.state === 'moving') {
     if (areTilesEqual(clickedTile, state.ball.tile)) {
-      return invalidHandled(state, 'Ball is already moving.');
+      return resolveMovingBallCatch(state, actor);
     }
 
-    // Future move-then-interact can branch here for "walk into range while ball is moving".
     return invalidUnhandled(state, 'Ball is already moving.');
   }
 
@@ -107,6 +108,49 @@ export function resolveFreeBallAction(
   }
 
   return executeTrap(state, actor, clickedTile);
+}
+
+export function resolveAutoPush(
+  state: GameState,
+  actor: PlayerModel,
+  fromTile: TileCoordinate,
+  toTile: TileCoordinate,
+): RuleResolution {
+  if (state.ball.state !== 'idle') {
+    return invalidUnhandled(state, 'Ball is not free.');
+  }
+
+  if (!areTilesEqual(toTile, state.ball.tile)) {
+    return invalidUnhandled(state, 'Player is not entering the ball tile.');
+  }
+
+  const direction = getDirectionBetweenTiles(fromTile, toTile);
+
+  if (!direction) {
+    return invalidUnhandled(state, 'Auto-push needs a movement direction.');
+  }
+
+  return createTravelResolution(state, actor, 'kick', direction, 1);
+}
+
+export function resolveMovingBallCatch(
+  state: GameState,
+  actor: PlayerModel,
+): RuleResolution {
+  const actionTile = getActionReferenceTile(actor);
+
+  if (!canCatchMovingBall(state.ball)) {
+    return invalidHandled(state, 'Ball is moving too fast to catch yet.');
+  }
+
+  if (!isOrthogonallyAdjacent(actionTile, state.ball.tile)) {
+    return invalidHandled(state, 'Player must be beside the ball to catch it.');
+  }
+
+  const nextState = cloneGameState(state);
+  nextState.ball = createTrappedBall(state.ball.tile, actor.id);
+
+  return successAction('trap', nextState);
 }
 
 export function resolveTrappedBallAction(
@@ -251,6 +295,7 @@ function createTravelResolution(
   actor: PlayerModel,
   action: 'kick' | 'shoot',
   direction: Direction,
+  maxTiles = KICK_SHOOT_MAX_TILES,
 ): RuleResolution {
   const travelPath = getTravelPath(
     state.ball.tile,
@@ -258,7 +303,7 @@ function createTravelResolution(
     state.players,
     actor.id,
     state.pitchSize,
-    KICK_SHOOT_MAX_TILES,
+    maxTiles,
   );
 
   const nextState = cloneGameState(state);
@@ -350,6 +395,14 @@ function isProtectedTrappedBall(
   return state.ball.state === 'trapped' && state.ball.controllerId !== actorId;
 }
 
+function canCatchMovingBall(ball: BallModel): boolean {
+  return getBallTilesTravelled(ball) >= MOVING_BALL_CATCHABLE_AFTER_TILES;
+}
+
+function getBallTilesTravelled(ball: BallModel): number {
+  return Math.max(ball.totalPathLength - ball.path.length, 0);
+}
+
 function isTrappedBallInteractionClick(
   ballTile: TileCoordinate,
   clickedTile: TileCoordinate,
@@ -364,10 +417,13 @@ function createIdleBall(tile: TileCoordinate): BallModel {
   return {
     tile: cloneTile(tile),
     state: 'idle',
+    moveTargetTile: null,
+    totalPathLength: 0,
+    pushableState: 0,
+    animationTimeMs: DEFAULT_BALL_ANIMATION_TIME_MS,
     direction: null,
     controllerId: null,
     path: [],
-    remainingPath: [],
   };
 }
 
@@ -377,14 +433,18 @@ function createMovingBall(
   path: TileCoordinate[],
 ): BallModel {
   const clonedPath = path.map(cloneTile);
+  const movementFactor = getPushableMovementFactor(clonedPath.length);
 
   return {
     tile: cloneTile(tile),
     state: 'moving',
+    moveTargetTile: clonedPath[0] ? cloneTile(clonedPath[0]) : null,
+    totalPathLength: clonedPath.length,
+    pushableState: movementFactor * 10,
+    animationTimeMs: DEFAULT_BALL_ANIMATION_TIME_MS * movementFactor,
     direction: { ...direction },
     controllerId: null,
     path: clonedPath,
-    remainingPath: clonedPath.map(cloneTile),
   };
 }
 
@@ -395,11 +455,26 @@ function createTrappedBall(
   return {
     tile: cloneTile(tile),
     state: 'trapped',
+    moveTargetTile: null,
+    totalPathLength: 0,
+    pushableState: 0,
+    animationTimeMs: DEFAULT_BALL_ANIMATION_TIME_MS,
     direction: null,
     controllerId,
     path: [],
-    remainingPath: [],
   };
+}
+
+function getPushableMovementFactor(pathLength: number): number {
+  if (pathLength >= 5) {
+    return 3;
+  }
+
+  if (pathLength >= 3) {
+    return 2;
+  }
+
+  return 1;
 }
 
 function invertDirection(direction: Direction): Direction {

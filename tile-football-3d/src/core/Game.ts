@@ -2,10 +2,11 @@ import { createCamera, updateCameraFrustum } from '../scene/createCamera';
 import { createRoom } from '../scene/createRoom';
 import { createRenderer } from '../scene/createRenderer';
 import { createScene } from '../scene/createScene';
+import { cloneBallModel } from './GameState';
 import type { ActorId, BallModel, GameState } from './GameState';
 import { findTilePath } from './findTilePath';
 import { isTileBlockedForMovement } from './movementBlocking';
-import { resolveClick } from './RuleSystem';
+import { resolveAutoPush, resolveClick } from './RuleSystem';
 import { TilePicker } from '../input/TilePicker';
 import { Ball, createBallMesh } from '../world/Ball';
 import { Player, createPlayerMesh } from '../world/Player';
@@ -157,6 +158,7 @@ export class Game {
     this.player.update(deltaSeconds);
     this.opponent.update(deltaSeconds);
     this.ball.update(deltaSeconds);
+    this.reconcileBallMovement();
     this.state = this.buildGameState();
     this.syncWorldMeshes();
     this.updateDebugOverlay();
@@ -227,7 +229,7 @@ export class Game {
     return {
       players: [this.player.toModel(), this.opponent.toModel()],
       activePlayerId: this.state.activePlayerId,
-      ball: this.ball.getModel(),
+      ball: cloneBallModel(this.state.ball),
       pitchSize: {
         columns: FIELD_TILES_X,
         rows: FIELD_TILES_Y,
@@ -295,7 +297,7 @@ export class Game {
   private updateDebugOverlay(): void {
     const playerModel = this.player.toModel();
     const opponentModel = this.opponent.toModel();
-    const ballModel = this.ball.getModel();
+    const ballModel = this.state.ball;
 
     const lines = [
       `tick         : ${this.tickNumber}`,
@@ -310,8 +312,9 @@ export class Game {
       `p2 path      : ${opponentModel.path.length}`,
       `ball state    : ${ballModel.state}`,
       `ball tile     : (${ballModel.tile.x},${ballModel.tile.z})`,
+      `ball target   : ${formatTile(ballModel.moveTargetTile)}`,
       `controller    : ${ballModel.controllerId ?? 'none'}`,
-      `ball path     : ${ballModel.remainingPath.length}`,
+      `ball path     : ${ballModel.path.length}`,
       '',
       'events:',
       ...this.debugLines,
@@ -350,6 +353,7 @@ export class Game {
       }
 
       if (resolution.approvedIds.has(player.id)) {
+        this.tryResolveAutoPush(player.id, intent.currentTile, intent.nextTile);
         player.beginStep(intent.nextTile);
       } else {
         player.cancelStepIfBlocked();
@@ -411,6 +415,73 @@ export class Game {
 
     player.setPath(player.currentTile, []);
     this.logDebug(`${player.id} stopped @ (${player.currentTile.x},${player.currentTile.z})`);
+  }
+
+  private reconcileBallMovement(): void {
+    const completedTile = this.ball.consumeCompletedSlideTile();
+
+    if (!completedTile) {
+      return;
+    }
+
+    const nextPath = dropLeadingTile(this.state.ball.path, completedTile);
+
+    if (nextPath.length === 0) {
+      const nextBall: BallModel = {
+        ...this.state.ball,
+        tile: completedTile,
+        state: 'idle',
+        moveTargetTile: null,
+        totalPathLength: 0,
+        pushableState: 0,
+        animationTimeMs: 500,
+        direction: null,
+        controllerId: null,
+        path: [],
+      };
+      this.state = {
+        ...this.state,
+        ball: nextBall,
+      };
+      this.ball.setModel(nextBall);
+      return;
+    }
+
+    const nextBall: BallModel = {
+      ...this.state.ball,
+      tile: completedTile,
+      moveTargetTile: { ...nextPath[0] },
+      path: nextPath,
+    };
+    this.state = {
+      ...this.state,
+      ball: nextBall,
+    };
+    this.ball.setModel(nextBall);
+  }
+
+  private tryResolveAutoPush(
+    actorId: ActorId,
+    fromTile: { x: number; z: number },
+    toTile: { x: number; z: number },
+  ): void {
+    const state = this.buildGameState();
+    const actor = state.players.find((entry) => entry.id === actorId);
+
+    if (!actor) {
+      return;
+    }
+
+    const resolution = resolveAutoPush(state, actor, fromTile, toTile);
+
+    if (!resolution.valid) {
+      return;
+    }
+
+    this.applyGameState(resolution.state);
+    this.logDebug(
+      `${actorId} auto-push -> (${resolution.state.ball.moveTargetTile?.x ?? resolution.state.ball.tile.x},${resolution.state.ball.moveTargetTile?.z ?? resolution.state.ball.tile.z})`,
+    );
   }
 }
 
@@ -474,10 +545,13 @@ function createInitialGameState(
   const initialBall: BallModel = {
     tile: { x: Math.floor(FIELD_TILES_X / 2), z: Math.floor(FIELD_TILES_Y / 2) },
     state: 'idle',
+    moveTargetTile: null,
+    totalPathLength: 0,
+    pushableState: 0,
+    animationTimeMs: 500,
     direction: null,
     controllerId: null,
     path: [],
-    remainingPath: [],
   };
 
   return {
@@ -685,4 +759,19 @@ function isTileReservedByActiveMover(
 
 function tileKey(tile: { x: number; z: number }): string {
   return `${tile.x}:${tile.z}`;
+}
+
+function dropLeadingTile(
+  path: { x: number; z: number }[],
+  tile: { x: number; z: number },
+): { x: number; z: number }[] {
+  if (path.length === 0) {
+    return [];
+  }
+
+  if (areTilesEqual(path[0], tile)) {
+    return path.slice(1).map((entry) => ({ ...entry }));
+  }
+
+  return path.map((entry) => ({ ...entry }));
 }

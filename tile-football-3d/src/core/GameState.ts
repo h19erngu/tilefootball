@@ -12,10 +12,13 @@ export type BallState = 'idle' | 'moving' | 'trapped';
 export type BallModel = {
   tile: TileCoordinate;
   state: BallState;
+  moveTargetTile: TileCoordinate | null;
+  totalPathLength: number;
+  pushableState: number;
+  animationTimeMs: number;
   direction: Direction | null;
   controllerId: ActorId | null;
   path: TileCoordinate[];
-  remainingPath: TileCoordinate[];
 };
 
 export type PendingInteraction = {
@@ -57,10 +60,13 @@ export function cloneBallModel(ball: BallModel): BallModel {
   return {
     tile: { ...ball.tile },
     state: ball.state,
+    moveTargetTile: ball.moveTargetTile ? { ...ball.moveTargetTile } : null,
+    totalPathLength: ball.totalPathLength,
+    pushableState: ball.pushableState,
+    animationTimeMs: ball.animationTimeMs,
     direction: ball.direction ? { ...ball.direction } : null,
     controllerId: ball.controllerId,
     path: ball.path.map(cloneTile),
-    remainingPath: ball.remainingPath.map(cloneTile),
   };
 }
 

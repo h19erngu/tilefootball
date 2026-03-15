@@ -3,6 +3,7 @@ import type {
   BallModel,
   Direction,
   GameState,
+  PendingInteraction,
   PlayerModel,
 } from './GameState';
 import { cloneGameState } from './GameState';
@@ -13,8 +14,6 @@ import {
   getDirectionBetweenTiles,
   getNextTile,
   getOrthogonalDistance,
-  isOrthogonallyAdjacent,
-  isStraightOrthogonalLine,
   isTileInBounds,
 } from '../world/Pitch';
 
@@ -23,7 +22,7 @@ export type RuleAction =
   | 'kick'
   | 'trap'
   | 'shoot'
-  | 'drop';
+  | 'release';
 
 export type RuleResolution = {
   handled: boolean;
@@ -33,9 +32,236 @@ export type RuleResolution = {
   reason?: string;
 };
 
-const KICK_SHOOT_MAX_TILES = 6;
+export type PendingInteractionResolution = {
+  handled: boolean;
+  valid: boolean;
+  pendingInteraction: PendingInteraction | null;
+  reason?: string;
+};
+
+const KICK_MAX_TILES = 6;
+const SHOOT_MAX_TILES = 6;
 const DEFAULT_BALL_ANIMATION_TIME_MS = 500;
 const MOVING_BALL_CATCHABLE_AFTER_TILES = 3;
+const TRAP_BALL_ANIMATION_TIME_MS = DEFAULT_BALL_ANIMATION_TIME_MS * 2;
+
+export function getPendingFreeBallInteraction(
+  state: GameState,
+  actorId: ActorId,
+  clickedTile: TileCoordinate,
+): PendingInteraction | null {
+  if (state.ball.state !== 'idle') {
+    return null;
+  }
+
+  const actor = getPlayerById(state, actorId);
+
+  if (!actor) {
+    return null;
+  }
+
+  const referenceTile = getMovementReferenceTile(actor);
+
+  if (isDirectBallClick(state.ball.tile, clickedTile)) {
+    return {
+      action: 'kick',
+      clickedTile: { ...clickedTile },
+      originTile: { ...referenceTile },
+    };
+  }
+
+  const actorToBall = getSnappedDirectionBetweenTiles(referenceTile, state.ball.tile);
+  const ballToClick = getSnappedDirectionBetweenTiles(state.ball.tile, clickedTile);
+
+  if (!actorToBall || !ballToClick) {
+    return null;
+  }
+
+  if (actorToBall.x !== ballToClick.x || actorToBall.z !== ballToClick.z) {
+    return null;
+  }
+
+  if (getOrthogonalDistance(state.ball.tile, clickedTile) !== 1) {
+    return null;
+  }
+
+  return {
+    action: 'trap',
+    clickedTile: { ...clickedTile },
+    originTile: { ...referenceTile },
+  };
+}
+
+export function getPendingTrappedBallInteraction(
+  state: GameState,
+  actorId: ActorId,
+  clickedTile: TileCoordinate,
+): PendingInteractionResolution {
+  const actor = getPlayerById(state, actorId);
+
+  if (!actor || state.ball.state !== 'trapped') {
+    return {
+      handled: false,
+      valid: false,
+      pendingInteraction: null,
+    };
+  }
+
+  const controlTile = getMovementReferenceTile(actor);
+
+  if (isProtectedTrappedBall(state, actor.id)) {
+    return {
+      handled: true,
+      valid: false,
+      pendingInteraction: null,
+      reason: 'Only the controlling player can use a trapped ball.',
+    };
+  }
+
+  if (areTilesEqual(clickedTile, controlTile)) {
+    return {
+      handled: true,
+      valid: false,
+      pendingInteraction: null,
+      reason: 'Click around the controlled ball to shoot or release.',
+    };
+  }
+
+  const directionToClick = getSnappedDirectionBetweenTiles(controlTile, clickedTile);
+
+  if (!directionToClick) {
+    return {
+      handled: true,
+      valid: false,
+      pendingInteraction: null,
+      reason: 'Choose a direction from the controlled ball.',
+    };
+  }
+
+  return {
+    handled: true,
+    valid: true,
+    pendingInteraction: {
+      action: getOrthogonalDistance(controlTile, clickedTile) === 1 ? 'shoot' : 'release',
+      clickedTile: { ...clickedTile },
+      originTile: { ...controlTile },
+    },
+  };
+}
+
+export function resolvePendingInteraction(
+  state: GameState,
+  actor: PlayerModel,
+  fromTile: TileCoordinate,
+  toTile: TileCoordinate,
+): RuleResolution {
+  const pendingInteraction = actor.pendingInteraction;
+
+  if (!pendingInteraction) {
+    return invalidUnhandled(state, 'No pending interaction.');
+  }
+
+  if (pendingInteraction.action === 'kick') {
+    if (state.ball.state !== 'idle') {
+      return invalidUnhandled(state, 'Ball is not free.');
+    }
+
+    if (!areTilesEqual(toTile, state.ball.tile)) {
+      return invalidUnhandled(state, 'Player is not entering the ball tile.');
+    }
+
+    const direction = getDirectionBetweenTiles(fromTile, toTile);
+
+    if (!direction) {
+      return invalidUnhandled(state, 'Pending interaction needs a movement direction.');
+    }
+
+    const resolution = createTravelResolution(state, actor, 'kick', direction, KICK_MAX_TILES);
+
+    return clearPendingInteraction(resolution, actor.id);
+  }
+
+  if (pendingInteraction.action === 'trap') {
+    if (state.ball.state !== 'idle') {
+      return invalidUnhandled(state, 'Ball is not free.');
+    }
+
+    if (!areTilesEqual(toTile, state.ball.tile)) {
+      return invalidUnhandled(state, 'Player is not entering the ball tile.');
+    }
+
+    const direction = getDirectionBetweenTiles(state.ball.tile, pendingInteraction.clickedTile);
+
+    if (!direction) {
+      return invalidUnhandled(state, 'Trap target must be next to the ball.');
+    }
+
+    const nextState = cloneGameState(state);
+    nextState.ball = createMovingBall(
+      state.ball.tile,
+      direction,
+      [pendingInteraction.clickedTile],
+      actor.id,
+      TRAP_BALL_ANIMATION_TIME_MS,
+    );
+    clearPendingInteractionOnState(nextState, actor.id);
+
+    return successAction('trap', nextState);
+  }
+
+  if (pendingInteraction.action === 'shoot' || pendingInteraction.action === 'release') {
+    if (state.ball.state !== 'trapped' || state.ball.controllerId !== actor.id) {
+      return invalidUnhandled(state, 'Ball is not controlled by this player.');
+    }
+
+    if (areTilesEqual(fromTile, toTile)) {
+      return invalidUnhandled(state, 'Trapped-ball interaction needs movement to begin.');
+    }
+
+    const direction = getSnappedDirectionBetweenTiles(
+      state.ball.tile,
+      pendingInteraction.clickedTile,
+    );
+
+    if (!direction) {
+      return invalidUnhandled(state, 'Trapped-ball interaction needs a direction.');
+    }
+
+    if (pendingInteraction.action === 'shoot') {
+      const resolution = createTravelResolution(
+        state,
+        actor,
+        'shoot',
+        invertDirection(direction),
+        SHOOT_MAX_TILES,
+      );
+
+      return clearPendingInteraction(resolution, actor.id);
+    }
+
+    const destination = addDirectionToTile(state.ball.tile, invertDirection(direction));
+
+    if (!isTileInBounds(destination, state.pitchSize)) {
+      return invalidHandled(state, 'Release destination is out of bounds.');
+    }
+
+    if (isTileOccupiedByOtherPlayer(destination, state.players, actor.id)) {
+      return invalidHandled(state, 'Release destination is occupied.');
+    }
+
+    const nextState = cloneGameState(state);
+    nextState.ball = createMovingBall(
+      state.ball.tile,
+      invertDirection(direction),
+      [destination],
+    );
+    clearPendingInteractionOnState(nextState, actor.id);
+
+    return successAction('release', nextState);
+  }
+
+  return invalidUnhandled(state, 'Unsupported pending interaction.');
+}
 
 export function resolveClick(
   state: GameState,
@@ -60,54 +286,7 @@ export function resolveClick(
     return resolveTrappedBallAction(state, actor, clickedTile);
   }
 
-  return resolveFreeBallAction(state, actor, clickedTile);
-}
-
-export function resolveFreeBallAction(
-  state: GameState,
-  actor: PlayerModel,
-  clickedTile: TileCoordinate,
-): RuleResolution {
-  const actionTile = getActionReferenceTile(actor);
-
-  // Free-ball resolution is intentionally split into:
-  // 1. ownership/protection
-  // 2. direct kick on the ball tile
-  // 3. immediate trap if the actor is already in the exact required lane
-  // This keeps the "can act now?" checks isolated, which will make a future
-  // move-then-interact layer easier to insert above these checks.
-  if (state.ball.controllerId && state.ball.controllerId !== actor.id) {
-    return invalid(
-      state,
-      isDirectBallClick(state.ball.tile, clickedTile),
-      'Ball is protected.',
-    );
-  }
-
-  if (isDirectBallClick(state.ball.tile, clickedTile)) {
-    return executeKick(state, actor);
-  }
-
-  if (!isImmediateFreeBallTrapLine(actionTile, state.ball.tile, clickedTile)) {
-    return invalidUnhandled(state, 'Click is not a free-ball action.');
-  }
-
-  const actorToBall = getDirectionBetweenTiles(actionTile, state.ball.tile);
-  const ballToClick = getDirectionBetweenTiles(state.ball.tile, clickedTile);
-
-  if (!actorToBall || !ballToClick) {
-    return invalidHandled(state, 'Free-ball actions must be in a straight line.');
-  }
-
-  if (actorToBall.x !== ballToClick.x || actorToBall.z !== ballToClick.z) {
-    return invalidHandled(state, 'Trap target must be one tile beyond the ball.');
-  }
-
-  if (getOrthogonalDistance(state.ball.tile, clickedTile) !== 1) {
-    return invalidHandled(state, 'Trap target must be one tile beyond the ball.');
-  }
-
-  return executeTrap(state, actor, clickedTile);
+  return invalidUnhandled(state, 'Free-ball movement handles this click.');
 }
 
 export function resolveAutoPush(
@@ -130,6 +309,18 @@ export function resolveAutoPush(
     return invalidUnhandled(state, 'Auto-push needs a movement direction.');
   }
 
+  const isContinuingDribble = Boolean(
+    actor.dribbleDirection &&
+    actor.dribbleDirection.x === direction.x &&
+    actor.dribbleDirection.z === direction.z &&
+    areTilesEqual(actor.targetTile, state.ball.tile),
+  );
+  const isWalkingThroughBall = !areTilesEqual(actor.targetTile, state.ball.tile);
+
+  if (!isWalkingThroughBall && !isContinuingDribble) {
+    return invalidUnhandled(state, 'Move target is not in front of the ball.');
+  }
+
   return createTravelResolution(state, actor, 'kick', direction, 1);
 }
 
@@ -143,12 +334,13 @@ export function resolveMovingBallCatch(
     return invalidHandled(state, 'Ball is moving too fast to catch yet.');
   }
 
-  if (!isOrthogonallyAdjacent(actionTile, state.ball.tile)) {
+  if (getOrthogonalDistance(actionTile, state.ball.tile) !== 1) {
     return invalidHandled(state, 'Player must be beside the ball to catch it.');
   }
 
   const nextState = cloneGameState(state);
-  nextState.ball = createTrappedBall(state.ball.tile, actor.id);
+  nextState.ball = createTrappedBall(actionTile, actor.id);
+  clearPendingInteractionOnState(nextState, actor.id);
 
   return successAction('trap', nextState);
 }
@@ -158,136 +350,70 @@ export function resolveTrappedBallAction(
   actor: PlayerModel,
   clickedTile: TileCoordinate,
 ): RuleResolution {
-  const controlTile = state.ball.tile;
+  const controlTile = getActionReferenceTile(actor);
 
   if (isProtectedTrappedBall(state, actor.id)) {
     return invalid(
       state,
-      isTrappedBallInteractionClick(state.ball.tile, clickedTile),
+      isTrappedBallInteractionClick(controlTile, clickedTile),
       'Only the controlling player can use a trapped ball.',
     );
   }
 
-  if (areTilesEqual(clickedTile, state.ball.tile)) {
-    return invalidHandled(state, 'Click beside or away from the trapped ball.');
+  if (areTilesEqual(clickedTile, controlTile)) {
+    return invalidHandled(state, 'Click around the controlled ball to shoot or release.');
   }
 
-  if (!isStraightOrthogonalLine(controlTile, clickedTile)) {
-    return invalidUnhandled(state, 'Diagonal trapped-ball clicks are invalid.');
+  const directionToClick = getDirectionBetweenTiles(controlTile, clickedTile);
+
+  if (!directionToClick) {
+    return invalidHandled(state, 'Choose a direction from the controlled ball.');
   }
 
-  if (isOrthogonallyAdjacent(controlTile, clickedTile)) {
-    return executeShoot(state, actor, clickedTile);
+  if (getOrthogonalDistance(controlTile, clickedTile) === 1) {
+    return createTravelResolution(
+      state,
+      actor,
+      'shoot',
+      invertDirection(directionToClick),
+      SHOOT_MAX_TILES,
+    );
   }
 
-  return executeDrop(state, actor, clickedTile);
+  return executeRelease(state, actor, clickedTile);
 }
 
-export function executeKick(
-  state: GameState,
-  actor: PlayerModel,
-): RuleResolution {
-  const actionTile = getActionReferenceTile(actor);
-  const direction = getDirectionBetweenTiles(actionTile, state.ball.tile);
-
-  if (!direction || !isOrthogonallyAdjacent(actionTile, state.ball.tile)) {
-    return invalidHandled(state, 'Player must stand orthogonally beside the ball to kick.');
-  }
-
-  return createTravelResolution(state, actor, 'kick', direction);
-}
-
-export function executeTrap(
+function executeRelease(
   state: GameState,
   actor: PlayerModel,
   clickedTile: TileCoordinate,
 ): RuleResolution {
-  const actionTile = getActionReferenceTile(actor);
+  const controlTile = getActionReferenceTile(actor);
+  const directionToClick = getDirectionBetweenTiles(controlTile, clickedTile);
 
-  if (!isTileInBounds(clickedTile, state.pitchSize)) {
-    return invalidHandled(state, 'Trap target is out of bounds.');
+  if (!directionToClick) {
+    return invalidHandled(state, 'Release requires a direction.');
   }
 
-  const actorToBall = getDirectionBetweenTiles(actionTile, state.ball.tile);
-
-  if (!actorToBall) {
-    return invalidHandled(state, 'Trap requires the player, ball, and target tile to align.');
-  }
-
-  if (!isOrthogonallyAdjacent(actionTile, state.ball.tile)) {
-    return invalidHandled(state, 'Trap requires the player, ball, and target tile to align.');
-  }
-
-  const ballToClick = getDirectionBetweenTiles(state.ball.tile, clickedTile);
-
-  if (!ballToClick) {
-    return invalidHandled(state, 'Trap requires the player, ball, and target tile to align.');
-  }
-
-  if (actorToBall.x !== ballToClick.x || actorToBall.z !== ballToClick.z) {
-    return invalidHandled(state, 'Trap requires the player, ball, and target tile to align.');
-  }
-
-  const nextState = cloneGameState(state);
-  nextState.ball = createTrappedBall(clickedTile, actor.id);
-
-  return successAction('trap', nextState);
-}
-
-export function executeShoot(
-  state: GameState,
-  actor: PlayerModel,
-  clickedTile: TileCoordinate,
-): RuleResolution {
-  const ballToClick = getDirectionBetweenTiles(state.ball.tile, clickedTile);
-
-  if (!ballToClick || !isOrthogonallyAdjacent(state.ball.tile, clickedTile)) {
-    return invalidHandled(state, 'Shoot requires one adjacent tile.');
-  }
-
-  if (!isTileInBounds(clickedTile, state.pitchSize)) {
-    return invalidHandled(state, 'Shoot step is out of bounds.');
-  }
-
-  if (isTileOccupiedByOtherPlayer(clickedTile, state.players, actor.id)) {
-    return invalidHandled(state, 'Shoot step is occupied.');
-  }
-
-  return createTravelResolution(state, actor, 'shoot', invertDirection(ballToClick));
-}
-
-export function executeDrop(
-  state: GameState,
-  actor: PlayerModel,
-  clickedTile: TileCoordinate,
-): RuleResolution {
-  const ballToClick = getDirectionBetweenTiles(state.ball.tile, clickedTile);
-
-  if (!ballToClick) {
-    return invalidHandled(state, 'Drop requires a straight line.');
-  }
-
-  if (getOrthogonalDistance(state.ball.tile, clickedTile) < 2) {
-    return invalidHandled(state, 'Drop requires a click at least two tiles away.');
-  }
-
-  const destination = addDirectionToTile(
-    state.ball.tile,
-    invertDirection(ballToClick),
-  );
+  const destination = addDirectionToTile(controlTile, invertDirection(directionToClick));
 
   if (!isTileInBounds(destination, state.pitchSize)) {
-    return invalidHandled(state, 'Drop destination is out of bounds.');
+    return invalidHandled(state, 'Release destination is out of bounds.');
   }
 
   if (isTileOccupiedByOtherPlayer(destination, state.players, actor.id)) {
-    return invalidHandled(state, 'Drop destination is occupied.');
+    return invalidHandled(state, 'Release destination is occupied.');
   }
 
   const nextState = cloneGameState(state);
-  nextState.ball = createIdleBall(destination);
+  nextState.ball = createMovingBall(
+    controlTile,
+    invertDirection(directionToClick),
+    [destination],
+  );
+  clearPendingInteractionOnState(nextState, actor.id);
 
-  return successAction('drop', nextState);
+  return successAction('release', nextState);
 }
 
 function createTravelResolution(
@@ -295,7 +421,7 @@ function createTravelResolution(
   actor: PlayerModel,
   action: 'kick' | 'shoot',
   direction: Direction,
-  maxTiles = KICK_SHOOT_MAX_TILES,
+  maxTiles: number,
 ): RuleResolution {
   const travelPath = getTravelPath(
     state.ball.tile,
@@ -307,6 +433,7 @@ function createTravelResolution(
   );
 
   const nextState = cloneGameState(state);
+  clearPendingInteractionOnState(nextState, actor.id);
 
   if (travelPath.length === 0) {
     nextState.ball = createIdleBall(state.ball.tile);
@@ -370,6 +497,10 @@ function getPlayerById(
 }
 
 function getActionReferenceTile(player: PlayerModel): TileCoordinate {
+  return player.currentTile;
+}
+
+function getMovementReferenceTile(player: PlayerModel): TileCoordinate {
   return player.nextTile ?? player.currentTile;
 }
 
@@ -378,14 +509,6 @@ function isDirectBallClick(
   clickedTile: TileCoordinate,
 ): boolean {
   return areTilesEqual(clickedTile, ballTile);
-}
-
-function isImmediateFreeBallTrapLine(
-  actorTile: TileCoordinate,
-  ballTile: TileCoordinate,
-  clickedTile: TileCoordinate,
-): boolean {
-  return isStraightOrthogonalLine(actorTile, ballTile, clickedTile);
 }
 
 function isProtectedTrappedBall(
@@ -404,13 +527,10 @@ function getBallTilesTravelled(ball: BallModel): number {
 }
 
 function isTrappedBallInteractionClick(
-  ballTile: TileCoordinate,
+  controlTile: TileCoordinate,
   clickedTile: TileCoordinate,
 ): boolean {
-  return (
-    areTilesEqual(clickedTile, ballTile) ||
-    isStraightOrthogonalLine(ballTile, clickedTile)
-  );
+  return !areTilesEqual(controlTile, clickedTile);
 }
 
 function createIdleBall(tile: TileCoordinate): BallModel {
@@ -431,6 +551,8 @@ function createMovingBall(
   tile: TileCoordinate,
   direction: Direction,
   path: TileCoordinate[],
+  controllerId: ActorId | null = null,
+  animationTimeMs = DEFAULT_BALL_ANIMATION_TIME_MS,
 ): BallModel {
   const clonedPath = path.map(cloneTile);
   const movementFactor = getPushableMovementFactor(clonedPath.length);
@@ -441,9 +563,9 @@ function createMovingBall(
     moveTargetTile: clonedPath[0] ? cloneTile(clonedPath[0]) : null,
     totalPathLength: clonedPath.length,
     pushableState: movementFactor * 10,
-    animationTimeMs: DEFAULT_BALL_ANIMATION_TIME_MS * movementFactor,
+    animationTimeMs: animationTimeMs * movementFactor,
     direction: { ...direction },
-    controllerId: null,
+    controllerId,
     path: clonedPath,
   };
 }
@@ -463,6 +585,36 @@ function createTrappedBall(
     controllerId,
     path: [],
   };
+}
+
+function clearPendingInteraction(
+  resolution: RuleResolution,
+  actorId: ActorId,
+): RuleResolution {
+  if (!resolution.valid) {
+    return resolution;
+  }
+
+  const nextState = cloneGameState(resolution.state);
+  clearPendingInteractionOnState(nextState, actorId);
+
+  return {
+    ...resolution,
+    state: nextState,
+  };
+}
+
+function clearPendingInteractionOnState(
+  state: GameState,
+  actorId: ActorId,
+): void {
+  const player = state.players.find((entry) => entry.id === actorId);
+
+  if (!player) {
+    return;
+  }
+
+  player.pendingInteraction = null;
 }
 
 function getPushableMovementFactor(pathLength: number): number {
@@ -486,6 +638,37 @@ function invertDirection(direction: Direction): Direction {
 
 function invertAxis(value: Direction['x']): Direction['x'] {
   return value === 0 ? 0 : (value * -1) as Direction['x'];
+}
+
+function getSnappedDirectionBetweenTiles(
+  from: TileCoordinate,
+  to: TileCoordinate,
+): Direction | null {
+  const directDirection = getDirectionBetweenTiles(from, to);
+
+  if (directDirection) {
+    return directDirection;
+  }
+
+  const deltaX = to.x - from.x;
+  const deltaZ = to.z - from.z;
+
+  if (deltaX === 0 && deltaZ === 0) {
+    return null;
+  }
+
+  return {
+    x: snapDirectionAxis(deltaX),
+    z: snapDirectionAxis(deltaZ),
+  };
+}
+
+function snapDirectionAxis(value: number): Direction['x'] {
+  if (value === 0) {
+    return 0;
+  }
+
+  return value > 0 ? 1 : -1;
 }
 
 function invalid(

@@ -22,8 +22,9 @@ export type BallModel = {
 };
 
 export type PendingInteraction = {
-  action: 'kick' | 'trap' | 'shoot' | 'drop';
+  action: 'kick' | 'trap' | 'shoot' | 'release';
   clickedTile: TileCoordinate;
+  originTile?: TileCoordinate;
 };
 
 export type PlayerModel = {
@@ -33,6 +34,7 @@ export type PlayerModel = {
   targetTile: TileCoordinate;
   path: TileCoordinate[];
   pendingInteraction?: PendingInteraction | null;
+  dribbleDirection?: Direction | null;
 };
 
 export type PitchSize = {
@@ -81,8 +83,12 @@ export function clonePlayerModel(player: PlayerModel): PlayerModel {
       ? {
           action: player.pendingInteraction.action,
           clickedTile: cloneTile(player.pendingInteraction.clickedTile),
+          originTile: player.pendingInteraction.originTile
+            ? cloneTile(player.pendingInteraction.originTile)
+            : undefined,
         }
       : player.pendingInteraction ?? null,
+    dribbleDirection: player.dribbleDirection ? { ...player.dribbleDirection } : null,
   };
 }
 

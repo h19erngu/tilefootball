@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="512" viewBox="0 0 1024 512">
+  <rect width="1024" height="512" fill="#f3f3f1"/>
+  <g opacity="0.18" stroke="#bdbdb7" stroke-width="3" fill="none">
+    <circle cx="64" cy="72" r="38"/>
+    <circle cx="192" cy="72" r="38"/>
+    <circle cx="320" cy="72" r="38"/>
+    <circle cx="448" cy="72" r="38"/>
+    <circle cx="576" cy="72" r="38"/>
+    <circle cx="704" cy="72" r="38"/>
+    <circle cx="832" cy="72" r="38"/>
+    <circle cx="960" cy="72" r="38"/>
+    <circle cx="128" cy="176" r="38"/>
+    <circle cx="256" cy="176" r="38"/>
+    <circle cx="384" cy="176" r="38"/>
+    <circle cx="512" cy="176" r="38"/>
+    <circle cx="640" cy="176" r="38"/>
+    <circle cx="768" cy="176" r="38"/>
+    <circle cx="896" cy="176" r="38"/>
+    <circle cx="64" cy="280" r="38"/>
+    <circle cx="192" cy="280" r="38"/>
+    <circle cx="320" cy="280" r="38"/>
+    <circle cx="448" cy="280" r="38"/>
+    <circle cx="576" cy="280" r="38"/>
+    <circle cx="704" cy="280" r="38"/>
+    <circle cx="832" cy="280" r="38"/>
+    <circle cx="960" cy="280" r="38"/>
+    <circle cx="128" cy="384" r="38"/>
+    <circle cx="256" cy="384" r="38"/>
+    <circle cx="384" cy="384" r="38"/>
+    <circle cx="512" cy="384" r="38"/>
+    <circle cx="640" cy="384" r="38"/>
+    <circle cx="768" cy="384" r="38"/>
+    <circle cx="896" cy="384" r="38"/>
+  </g>
+  <g fill="#1f2025" stroke="#111218" stroke-width="4">
+    <polygon points="64,34 86,50 78,76 50,76 42,50"/>
+    <polygon points="192,34 214,50 206,76 178,76 170,50"/>
+    <polygon points="320,34 342,50 334,76 306,76 298,50"/>
+    <polygon points="448,34 470,50 462,76 434,76 426,50"/>
+    <polygon points="576,34 598,50 590,76 562,76 554,50"/>
+    <polygon points="704,34 726,50 718,76 690,76 682,50"/>
+    <polygon points="832,34 854,50 846,76 818,76 810,50"/>
+    <polygon points="960,34 982,50 974,76 946,76 938,50"/>
+    <polygon points="128,138 150,154 142,180 114,180 106,154"/>
+    <polygon points="256,138 278,154 270,180 242,180 234,154"/>
+    <polygon points="384,138 406,154 398,180 370,180 362,154"/>
+    <polygon points="512,138 534,154 526,180 498,180 490,154"/>
+    <polygon points="640,138 662,154 654,180 626,180 618,154"/>
+    <polygon points="768,138 790,154 782,180 754,180 746,154"/>
+    <polygon points="896,138 918,154 910,180 882,180 874,154"/>
+    <polygon points="64,242 86,258 78,284 50,284 42,258"/>
+    <polygon points="192,242 214,258 206,284 178,284 170,258"/>
+    <polygon points="320,242 342,258 334,284 306,284 298,258"/>
+    <polygon points="448,242 470,258 462,284 434,284 426,258"/>
+    <polygon points="576,242 598,258 590,284 562,284 554,258"/>
+    <polygon points="704,242 726,258 718,284 690,284 682,258"/>
+    <polygon points="832,242 854,258 846,284 818,284 810,258"/>
+    <polygon points="960,242 982,258 974,284 946,284 938,258"/>
+    <polygon points="128,346 150,362 142,388 114,388 106,362"/>
+    <polygon points="256,346 278,362 270,388 242,388 234,362"/>
+    <polygon points="384,346 406,362 398,388 370,388 362,362"/>
+    <polygon points="512,346 534,362 526,388 498,388 490,362"/>
+    <polygon points="640,346 662,362 654,388 626,388 618,362"/>
+    <polygon points="768,346 790,362 782,388 754,388 746,362"/>
+    <polygon points="896,346 918,362 910,388 882,388 874,362"/>
+  </g>
+</svg>

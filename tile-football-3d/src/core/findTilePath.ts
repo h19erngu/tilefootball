@@ -1,6 +1,7 @@
 import type { PitchSize, PlayerModel } from './GameState';
 import type { TileCoordinate } from '../world/Pitch';
 import { isTileBlockedForMovement } from './movementBlocking';
+import { isTileInBounds } from '../world/Pitch';
 
 type SearchNode = {
   tile: TileCoordinate;
@@ -98,6 +99,51 @@ export function findTilePath(
   return [];
 }
 
+export function findNearestReachableTile(
+  start: TileCoordinate,
+  desiredGoal: TileCoordinate,
+  players: PlayerModel[],
+  pitchSize: PitchSize,
+  actorId?: string,
+): { goal: TileCoordinate; path: TileCoordinate[] } | null {
+  if (!isTileInBounds(start, pitchSize) || !isTileInBounds(desiredGoal, pitchSize)) {
+    return null;
+  }
+
+  const directPath = findTilePath(start, desiredGoal, players, pitchSize, actorId);
+
+  if (directPath.length > 0) {
+    return {
+      goal: { ...desiredGoal },
+      path: directPath,
+    };
+  }
+
+  const maxRadius = Math.max(pitchSize.columns, pitchSize.rows);
+  const candidateKeys = new Set<string>();
+
+  for (let radius = 1; radius <= maxRadius; radius += 1) {
+    const candidates = collectCandidateTiles(desiredGoal, radius, pitchSize)
+      .filter((tile) => !candidateKeys.has(tileKey(tile)))
+      .filter((tile) => !isBlockedTile(tile, players, actorId))
+      .sort((left, right) => compareCandidatePreference(left, right, desiredGoal, start));
+
+    for (const candidate of candidates) {
+      candidateKeys.add(tileKey(candidate));
+      const path = findTilePath(start, candidate, players, pitchSize, actorId);
+
+      if (path.length > 0) {
+        return {
+          goal: candidate,
+          path,
+        };
+      }
+    }
+  }
+
+  return null;
+}
+
 function reconstructPath(
   cameFrom: Map<string, string>,
   start: TileCoordinate,
@@ -151,18 +197,6 @@ function isBlockedTile(
   actorId?: string,
 ): boolean {
   return isTileBlockedForMovement(tile, players, actorId);
-}
-
-function isTileInBounds(
-  tile: TileCoordinate,
-  pitchSize: PitchSize,
-): boolean {
-  return (
-    tile.x >= 0 &&
-    tile.z >= 0 &&
-    tile.x < pitchSize.columns &&
-    tile.z < pitchSize.rows
-  );
 }
 
 function getManhattanDistance(
@@ -222,6 +256,65 @@ function compareNeighborPreference(
   }
 
   return tileKey(left).localeCompare(tileKey(right));
+}
+
+function compareCandidatePreference(
+  left: TileCoordinate,
+  right: TileCoordinate,
+  desiredGoal: TileCoordinate,
+  start: TileCoordinate,
+): number {
+  const leftChebyshevToGoal = getChebyshevDistance(left, desiredGoal);
+  const rightChebyshevToGoal = getChebyshevDistance(right, desiredGoal);
+
+  if (leftChebyshevToGoal !== rightChebyshevToGoal) {
+    return leftChebyshevToGoal - rightChebyshevToGoal;
+  }
+
+  const leftManhattanToGoal = getManhattanDistance(left, desiredGoal);
+  const rightManhattanToGoal = getManhattanDistance(right, desiredGoal);
+
+  if (leftManhattanToGoal !== rightManhattanToGoal) {
+    return leftManhattanToGoal - rightManhattanToGoal;
+  }
+
+  const leftDistanceToStart = getChebyshevDistance(left, start);
+  const rightDistanceToStart = getChebyshevDistance(right, start);
+
+  if (leftDistanceToStart !== rightDistanceToStart) {
+    return leftDistanceToStart - rightDistanceToStart;
+  }
+
+  return tileKey(left).localeCompare(tileKey(right));
+}
+
+function collectCandidateTiles(
+  center: TileCoordinate,
+  radius: number,
+  pitchSize: PitchSize,
+): TileCoordinate[] {
+  const tiles: TileCoordinate[] = [];
+
+  for (let deltaX = -radius; deltaX <= radius; deltaX += 1) {
+    for (let deltaZ = -radius; deltaZ <= radius; deltaZ += 1) {
+      const chebyshevDistance = Math.max(Math.abs(deltaX), Math.abs(deltaZ));
+
+      if (chebyshevDistance !== radius) {
+        continue;
+      }
+
+      const tile = {
+        x: center.x + deltaX,
+        z: center.z + deltaZ,
+      };
+
+      if (isTileInBounds(tile, pitchSize)) {
+        tiles.push(tile);
+      }
+    }
+  }
+
+  return tiles;
 }
 
 function isValidPath(

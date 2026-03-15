@@ -1,4 +1,11 @@
-import { Mesh, MeshStandardMaterial, SphereGeometry } from 'three';
+import {
+  CanvasTexture,
+  CircleGeometry,
+  Group,
+  Mesh,
+  MeshStandardMaterial,
+  SphereGeometry,
+} from 'three';
 import type { BallModel } from '../core/GameState';
 import type { WorldPosition } from './Pitch';
 import { tileCoordinateToWorldPosition } from './Pitch';
@@ -17,6 +24,18 @@ type ActiveSlide = {
   elapsedMs: number;
   durationMs: number;
   targetTileKey: string;
+};
+
+export type BallAppearance = {
+  spotScale: number;
+  patternScale: number;
+  ringOpacity: number;
+};
+
+export const DEFAULT_BALL_APPEARANCE: BallAppearance = {
+  spotScale: 1.79,
+  patternScale: 0.74,
+  ringOpacity: 0,
 };
 
 export class Ball {
@@ -230,11 +249,11 @@ function getCustomArrivalTimes(
   }
 
   const baseArrivalTimes = [
-    fallbackDurationMs * 0.5,
-    fallbackDurationMs * 1,
-    fallbackDurationMs * 1.5,
-    fallbackDurationMs * 3,
-    fallbackDurationMs * 4,
+    fallbackDurationMs * 0.3,
+    fallbackDurationMs * 0.6,
+    fallbackDurationMs * 0.9,
+    fallbackDurationMs * 1.4,
+    fallbackDurationMs * 2,
   ];
 
   if (totalPathLength === baseArrivalTimes.length) {
@@ -245,7 +264,7 @@ function getCustomArrivalTimes(
 
   while (arrivalTimes.length < totalPathLength) {
     const previousArrivalTime = arrivalTimes[arrivalTimes.length - 1] ?? 0;
-    arrivalTimes.push(previousArrivalTime + fallbackDurationMs);
+    arrivalTimes.push(previousArrivalTime + fallbackDurationMs * 0.6);
   }
 
   return arrivalTimes;
@@ -272,15 +291,175 @@ function getTileKey(tile: BallModel['tile']): string {
   return `${tile.x}:${tile.z}`;
 }
 
-export function createBallMesh(ball: Ball) {
-  const mesh = new Mesh(
-    new SphereGeometry(ball.radius, 24, 24),
-    new MeshStandardMaterial({ color: '#f8fafc' }),
+export function createBallMesh(
+  ball: Ball,
+  appearance: BallAppearance = DEFAULT_BALL_APPEARANCE,
+) {
+  const container = new Group();
+  const texture = createSoccerUvTexture(appearance);
+  const shell = new Mesh(
+    new SphereGeometry(ball.radius, 32, 32),
+    new MeshStandardMaterial({
+      map: texture,
+      roughness: 0.9,
+      metalness: 0,
+    }),
   );
+  const shadow = new Mesh(
+    new CircleGeometry(ball.radius * 0.85, 18),
+    new MeshStandardMaterial({
+      color: '#000000',
+      transparent: true,
+      opacity: appearance.ringOpacity,
+      roughness: 1,
+      metalness: 0,
+    }),
+  );
+  shadow.rotation.x = -Math.PI / 2;
+  shadow.position.y = -ball.radius + 0.02;
 
-  ball.syncMesh(mesh);
+  container.add(shadow, shell);
+  container.userData.ballShell = shell;
+  container.userData.ballShadow = shadow;
+  ball.syncMesh(container);
 
-  return mesh;
+  return container;
+}
+
+export function updateBallMeshAppearance(
+  mesh: ReturnType<typeof createBallMesh>,
+  appearance: BallAppearance,
+): void {
+  const shell = mesh.userData.ballShell as { material?: object } | undefined;
+  const shadow = mesh.userData.ballShadow as { material?: object } | undefined;
+
+  if (shell?.material && 'map' in shell.material) {
+    const material = shell.material as {
+      map?: { dispose: () => void } | null;
+      needsUpdate?: boolean;
+    };
+    material.map?.dispose();
+    material.map = createSoccerUvTexture(appearance);
+    material.needsUpdate = true;
+  }
+
+  if (shadow?.material) {
+    const material = shadow.material as {
+      opacity?: number;
+      needsUpdate?: boolean;
+    };
+    material.opacity = appearance.ringOpacity;
+    material.needsUpdate = true;
+  }
+}
+
+function createSoccerUvTexture(appearance: BallAppearance) {
+  const canvas = document.createElement('canvas');
+  canvas.width = 1024;
+  canvas.height = 512;
+
+  const context = canvas.getContext('2d');
+
+  if (!context) {
+    const texture = new CanvasTexture(canvas);
+    texture.needsUpdate = true;
+    return texture;
+  }
+
+  context.fillStyle = '#f4f4f1';
+  context.fillRect(0, 0, canvas.width, canvas.height);
+
+  const baseTileSize = 128 / Math.max(appearance.patternScale, 0.45);
+  const columns = Math.ceil(canvas.width / baseTileSize) + 1;
+  const rows = Math.ceil(canvas.height / (baseTileSize * 0.82)) + 1;
+  const ringRadius = baseTileSize * 0.3;
+  const spotRadius = ringRadius * 0.55 * appearance.spotScale;
+
+  context.lineWidth = Math.max(baseTileSize * 0.018, 1.5);
+  context.strokeStyle = `rgba(189, 189, 183, ${appearance.ringOpacity})`;
+
+  for (let row = 0; row < rows; row += 1) {
+    const y = row * baseTileSize * 0.82 + baseTileSize * 0.52;
+    const xOffset = row % 2 === 0 ? baseTileSize * 0.5 : 0;
+
+    for (let column = 0; column < columns; column += 1) {
+      const x = column * baseTileSize + xOffset;
+      drawPatternTile(context, x, y, ringRadius, spotRadius);
+    }
+  }
+
+  const texture = new CanvasTexture(canvas);
+  texture.needsUpdate = true;
+  return texture;
+}
+
+function drawPatternTile(
+  context: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  ringRadius: number,
+  spotRadius: number,
+): void {
+  context.beginPath();
+  context.arc(x, y, ringRadius, 0, Math.PI * 2);
+  context.stroke();
+
+  const gradient = context.createLinearGradient(
+    x - spotRadius,
+    y - spotRadius,
+    x + spotRadius,
+    y + spotRadius,
+  );
+  gradient.addColorStop(0, '#24252b');
+  gradient.addColorStop(1, '#111217');
+  context.fillStyle = gradient;
+  fillPolygon(
+    context,
+    getPentagonPoints(x, y, spotRadius),
+    gradient,
+  );
+}
+
+function fillPolygon(
+  context: CanvasRenderingContext2D,
+  points: [number, number][],
+  fill: string | CanvasGradient,
+): void {
+  if (points.length === 0) {
+    return;
+  }
+
+  context.fillStyle = fill;
+  context.beginPath();
+  context.moveTo(points[0][0], points[0][1]);
+
+  for (let index = 1; index < points.length; index += 1) {
+    context.lineTo(points[index][0], points[index][1]);
+  }
+
+  context.closePath();
+  context.fill();
+
+  context.strokeStyle = '#0c0d12';
+  context.stroke();
+}
+
+function getPentagonPoints(
+  centerX: number,
+  centerY: number,
+  radius: number,
+): [number, number][] {
+  const points: [number, number][] = [];
+
+  for (let index = 0; index < 5; index += 1) {
+    const angle = -Math.PI / 2 + index * ((Math.PI * 2) / 5);
+    points.push([
+      centerX + Math.cos(angle) * radius,
+      centerY + Math.sin(angle) * radius,
+    ]);
+  }
+
+  return points;
 }
 
 function cloneBallModel(ball: BallModel): BallModel {

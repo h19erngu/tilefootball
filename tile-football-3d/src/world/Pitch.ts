@@ -18,6 +18,9 @@ export const PATCH_SIZE = 3;
 export const FIELD_TILES_X = FIELD_PATCHES_X * PATCH_SIZE;
 export const FIELD_TILES_Y = FIELD_PATCHES_Y * PATCH_SIZE;
 export const TILE_SIZE = 1;
+export const WALKABLE_MARGIN_TILES = 2;
+export const WALKABLE_TILES_X = FIELD_TILES_X + WALKABLE_MARGIN_TILES * 2;
+export const WALKABLE_TILES_Y = FIELD_TILES_Y + WALKABLE_MARGIN_TILES * 2;
 export const FIELD_WORLD_WIDTH = FIELD_TILES_Y * TILE_SIZE;
 export const FIELD_WORLD_DEPTH = FIELD_TILES_X * TILE_SIZE;
 export const FIELD_WORLD_PATCHES_X = FIELD_PATCHES_Y;
@@ -33,6 +36,11 @@ const LINE_COLOR = '#f8fafc';
 export type TileCoordinate = {
   x: number;
   z: number;
+};
+
+export type TileDirection = {
+  x: -1 | 0 | 1;
+  z: -1 | 0 | 1;
 };
 
 export type WorldPosition = {
@@ -136,13 +144,18 @@ export function areTilesEqual(a: TileCoordinate, b: TileCoordinate): boolean {
 
 export function isTileInBounds(
   tile: TileCoordinate,
-  bounds: PitchBounds = { columns: FIELD_TILES_X, rows: FIELD_TILES_Y },
+  bounds: PitchBounds = { columns: WALKABLE_TILES_X, rows: WALKABLE_TILES_Y },
 ): boolean {
+  const minX = -Math.floor((bounds.columns - FIELD_TILES_X) / 2);
+  const minZ = -Math.floor((bounds.rows - FIELD_TILES_Y) / 2);
+  const maxX = minX + bounds.columns;
+  const maxZ = minZ + bounds.rows;
+
   return (
-    tile.x >= 0 &&
-    tile.x < bounds.columns &&
-    tile.z >= 0 &&
-    tile.z < bounds.rows
+    tile.x >= minX &&
+    tile.x < maxX &&
+    tile.z >= minZ &&
+    tile.z < maxZ
   );
 }
 
@@ -188,13 +201,13 @@ export function getOrthogonalDistance(
 export function getDirectionBetweenTiles(
   from: TileCoordinate,
   to: TileCoordinate,
-): { x: -1 | 0 | 1; z: -1 | 0 | 1 } | null {
+): TileDirection | null {
   return getNormalizedDirection(from, to);
 }
 
 export function addDirectionToTile(
   tile: TileCoordinate,
-  direction: { x: -1 | 0 | 1; z: -1 | 0 | 1 },
+  direction: TileDirection,
 ): TileCoordinate {
   return {
     x: tile.x + direction.x,
@@ -204,9 +217,33 @@ export function addDirectionToTile(
 
 export function getNextTile(
   tile: TileCoordinate,
-  direction: { x: -1 | 0 | 1; z: -1 | 0 | 1 },
+  direction: TileDirection,
 ): TileCoordinate {
   return addDirectionToTile(tile, direction);
+}
+
+export function getTileDirection(
+  from: TileCoordinate,
+  to: TileCoordinate,
+): TileDirection | null {
+  return getNormalizedDirection(from, to);
+}
+
+export function getFacingAngleForTileStep(
+  from: TileCoordinate,
+  to: TileCoordinate,
+): number | null {
+  const direction = getTileDirection(from, to);
+
+  if (!direction) {
+    return null;
+  }
+
+  return getFacingAngleForDirection(direction);
+}
+
+export function getFacingAngleForDirection(direction: TileDirection): number {
+  return Math.atan2(direction.z, direction.x);
 }
 
 export function getTilesBetweenInclusive(

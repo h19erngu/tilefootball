@@ -3,6 +3,8 @@ import { createRoom } from '../scene/createRoom';
 import { createRenderer } from '../scene/createRenderer';
 import { createScene } from '../scene/createScene';
 import type { ActorId, BallModel, GameState } from './GameState';
+import { findTilePath } from './findTilePath';
+import { isTileBlockedForMovement } from './movementBlocking';
 import { resolveClick } from './RuleSystem';
 import { TilePicker } from '../input/TilePicker';
 import { Ball, createBallMesh } from '../world/Ball';
@@ -187,9 +189,28 @@ export class Game {
       return;
     }
 
-    activePlayer.setTargetTile(tile);
+    const path = findTilePath(
+      activePlayer.currentTile,
+      tile,
+      state.players,
+      state.pitchSize,
+      activePlayerId,
+    );
+
+    if (path.length === 0) {
+      this.logDebug(`${activePlayerId} move blocked @ (${tile.x},${tile.z}) no path`);
+      return;
+    }
+
+    activePlayer.setPath(
+      tile,
+      path.slice(1),
+      activePlayer.nextTile !== null,
+    );
     this.state = this.buildGameState();
-    this.logDebug(`${activePlayerId} move target -> (${tile.x},${tile.z})`);
+    this.logDebug(
+      `${activePlayerId} ${activePlayer.nextTile ? 'reroute' : 'move target'} -> (${tile.x},${tile.z}) path=${path.length - 1}`,
+    );
   };
 
   private syncWorldMeshes(): void {
@@ -228,7 +249,8 @@ export class Game {
     if (
       !areTilesEqual(localPlayer.currentTile, this.player.currentTile) ||
       !areTilesEqualOrBothNull(localPlayer.nextTile, this.player.nextTile) ||
-      !areTilesEqual(localPlayer.targetTile, this.player.targetTile)
+      !areTilesEqual(localPlayer.targetTile, this.player.targetTile) ||
+      !areTileArraysEqual(localPlayer.path, this.player.path)
     ) {
       this.player.applyModel(localPlayer);
     }
@@ -236,7 +258,8 @@ export class Game {
     if (
       !areTilesEqual(opponentPlayer.currentTile, this.opponent.currentTile) ||
       !areTilesEqualOrBothNull(opponentPlayer.nextTile, this.opponent.nextTile) ||
-      !areTilesEqual(opponentPlayer.targetTile, this.opponent.targetTile)
+      !areTilesEqual(opponentPlayer.targetTile, this.opponent.targetTile) ||
+      !areTileArraysEqual(opponentPlayer.path, this.opponent.path)
     ) {
       this.opponent.applyModel(opponentPlayer);
     }
@@ -280,9 +303,11 @@ export class Game {
       `p1 current   : (${playerModel.currentTile.x},${playerModel.currentTile.z})`,
       `p1 next      : ${formatTile(playerModel.nextTile)}`,
       `p1 target    : (${playerModel.targetTile.x},${playerModel.targetTile.z})`,
+      `p1 path      : ${playerModel.path.length}`,
       `p2 current   : (${opponentModel.currentTile.x},${opponentModel.currentTile.z})`,
       `p2 next      : ${formatTile(opponentModel.nextTile)}`,
       `p2 target    : (${opponentModel.targetTile.x},${opponentModel.targetTile.z})`,
+      `p2 path      : ${opponentModel.path.length}`,
       `ball state    : ${ballModel.state}`,
       `ball tile     : (${ballModel.tile.x},${ballModel.tile.z})`,
       `controller    : ${ballModel.controllerId ?? 'none'}`,
@@ -303,8 +328,14 @@ export class Game {
   private resolvePlayerMovementContests(): void {
     const players = [this.player, this.opponent];
     const snapshot = players.map((player) => player.toModel());
+
+    for (const player of players) {
+      this.recheckPathForPlayer(player, snapshot);
+    }
+
+    const refreshedSnapshot = players.map((player) => player.toModel());
     const intents = collectMoveIntents(players);
-    const resolution = resolveApprovedMoveIds(intents, snapshot, this.tickNumber);
+    const resolution = resolveApprovedMoveIds(intents, refreshedSnapshot, this.tickNumber);
 
     for (const contestLog of resolution.contestLogs) {
       this.logDebug(contestLog);
@@ -328,6 +359,58 @@ export class Game {
 
   private getPlayerInstance(actorId: ActorId): Player {
     return actorId === LOCAL_PLAYER_ID ? this.player : this.opponent;
+  }
+
+  private recheckPathForPlayer(
+    player: Player,
+    players: GameState['players'],
+  ): void {
+    const nextTile = player.getIntendedNextTile();
+
+    if (!nextTile) {
+      if (areTilesEqual(player.currentTile, player.targetTile)) {
+        return;
+      }
+
+      const rebuiltPath = findTilePath(
+        player.currentTile,
+        player.targetTile,
+        players,
+        this.state.pitchSize,
+        player.id,
+      );
+
+      if (rebuiltPath.length > 0) {
+        player.setPath(player.targetTile, rebuiltPath.slice(1));
+        this.logDebug(`${player.id} repath -> (${player.targetTile.x},${player.targetTile.z})`);
+      } else {
+        player.setPath(player.currentTile, []);
+        this.logDebug(`${player.id} stopped @ (${player.currentTile.x},${player.currentTile.z})`);
+      }
+
+      return;
+    }
+
+    if (!isTileBlockedForMovement(nextTile, players, player.id)) {
+      return;
+    }
+
+    const newPath = findTilePath(
+      player.currentTile,
+      player.targetTile,
+      players,
+      this.state.pitchSize,
+      player.id,
+    );
+
+    if (newPath.length > 0) {
+      player.setPath(player.targetTile, newPath.slice(1));
+      this.logDebug(`${player.id} repath -> (${player.targetTile.x},${player.targetTile.z})`);
+      return;
+    }
+
+    player.setPath(player.currentTile, []);
+    this.logDebug(`${player.id} stopped @ (${player.currentTile.x},${player.currentTile.z})`);
   }
 }
 
@@ -365,6 +448,23 @@ function areTilesEqualOrBothNull(
 
 function formatTile(tile: { x: number; z: number } | null): string {
   return tile ? `(${tile.x},${tile.z})` : '-';
+}
+
+function areTileArraysEqual(
+  left: { x: number; z: number }[],
+  right: { x: number; z: number }[],
+): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+
+  for (let index = 0; index < left.length; index += 1) {
+    if (!areTilesEqual(left[index], right[index])) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 function createInitialGameState(

@@ -28,6 +28,7 @@ export type PlayerModel = {
   currentTile: TileCoordinate;
   nextTile: TileCoordinate | null;
   targetTile: TileCoordinate;
+  path: TileCoordinate[];
   pendingInteraction?: PendingInteraction | null;
 };
 
@@ -69,6 +70,7 @@ export function clonePlayerModel(player: PlayerModel): PlayerModel {
     currentTile: { ...player.currentTile },
     nextTile: player.nextTile ? { ...player.nextTile } : null,
     targetTile: { ...player.targetTile },
+    path: player.path.map(cloneTile),
     pendingInteraction: player.pendingInteraction
       ? {
           action: player.pendingInteraction.action,

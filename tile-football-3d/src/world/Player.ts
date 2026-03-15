@@ -23,6 +23,7 @@ export class Player {
   public readonly speedTilesPerSecond: number;
   public currentTile: TileCoordinate;
   public targetTile: TileCoordinate;
+  public path: TileCoordinate[] = [];
   private renderPosition: WorldPosition;
   public nextTile: TileCoordinate | null = null;
 
@@ -42,31 +43,56 @@ export class Player {
     this.renderPosition = tileCoordinateToWorldPosition(startTile);
   }
 
-  setTargetTile(tile: TileCoordinate): void {
+  setPath(
+    tile: TileCoordinate,
+    path: TileCoordinate[],
+    preserveCurrentStep = false,
+  ): void {
+    const sanitizedPath = sanitizePath(this.currentTile, path);
+
     this.targetTile = { ...tile };
+    this.path = sanitizedPath;
+
+    if (!preserveCurrentStep || !this.nextTile) {
+      this.nextTile = null;
+      this.renderPosition = tileCoordinateToWorldPosition(this.currentTile);
+    }
+
+    if (this.path.length === 0 && !this.nextTile) {
+      this.targetTile = { ...this.currentTile };
+    }
   }
 
   getIntendedNextTile(): TileCoordinate | null {
     if (this.nextTile) {
-      return { ...this.nextTile };
+      if (!isAdjacentStep(this.currentTile, this.nextTile)) {
+        this.nextTile = null;
+      } else {
+        return { ...this.nextTile };
+      }
     }
 
-    if (
-      this.currentTile.x === this.targetTile.x &&
-      this.currentTile.z === this.targetTile.z
-    ) {
+    if (this.path.length === 0) {
       return null;
     }
 
-    return {
-      x:
-        this.currentTile.x + Math.sign(this.targetTile.x - this.currentTile.x),
-      z:
-        this.currentTile.z + Math.sign(this.targetTile.z - this.currentTile.z),
-    };
+    const nextPathTile = this.path[0];
+
+    if (!isAdjacentStep(this.currentTile, nextPathTile)) {
+      this.path = [];
+      this.targetTile = { ...this.currentTile };
+      return null;
+    }
+
+    return { ...nextPathTile };
   }
 
   beginStep(tile: TileCoordinate): void {
+    if (!isAdjacentStep(this.currentTile, tile)) {
+      this.nextTile = null;
+      return;
+    }
+
     this.nextTile = { ...tile };
   }
 
@@ -76,8 +102,11 @@ export class Player {
 
   applyModel(model: PlayerModel): void {
     this.currentTile = { ...model.currentTile };
-    this.nextTile = model.nextTile ? { ...model.nextTile } : null;
+    this.nextTile = model.nextTile && isAdjacentStep(model.currentTile, model.nextTile)
+      ? { ...model.nextTile }
+      : null;
     this.targetTile = { ...model.targetTile };
+    this.path = sanitizePath(model.currentTile, model.path);
     this.renderPosition = tileCoordinateToWorldPosition(model.currentTile);
   }
 
@@ -87,6 +116,7 @@ export class Player {
       currentTile: { ...this.currentTile },
       nextTile: this.nextTile ? { ...this.nextTile } : null,
       targetTile: { ...this.targetTile },
+      path: this.path.map((tile) => ({ ...tile })),
     };
   }
 
@@ -99,6 +129,14 @@ export class Player {
       if (!destinationTile) {
         return;
       }
+
+      if (!isAdjacentStep(this.currentTile, destinationTile)) {
+        this.nextTile = null;
+        this.path = [];
+        this.targetTile = { ...this.currentTile };
+        return;
+      }
+
       const destination = tileCoordinateToWorldPosition(destinationTile);
       const deltaX = destination.x - this.renderPosition.x;
       const deltaZ = destination.z - this.renderPosition.z;
@@ -136,7 +174,45 @@ export class Player {
     this.currentTile = { ...tile };
     this.renderPosition = position;
     this.nextTile = null;
+
+    if (this.path.length > 0 && areTilesEqual(this.path[0], tile)) {
+      this.path.shift();
+    }
+
+    if (this.path.length === 0) {
+      this.targetTile = { ...this.currentTile };
+    }
   }
+}
+
+function areTilesEqual(left: TileCoordinate, right: TileCoordinate): boolean {
+  return left.x === right.x && left.z === right.z;
+}
+
+function isAdjacentStep(left: TileCoordinate, right: TileCoordinate): boolean {
+  const deltaX = Math.abs(left.x - right.x);
+  const deltaZ = Math.abs(left.z - right.z);
+
+  return deltaX <= 1 && deltaZ <= 1 && (deltaX !== 0 || deltaZ !== 0);
+}
+
+function sanitizePath(
+  start: TileCoordinate,
+  path: TileCoordinate[],
+): TileCoordinate[] {
+  const sanitizedPath: TileCoordinate[] = [];
+  let previousTile = start;
+
+  for (const tile of path) {
+    if (!isAdjacentStep(previousTile, tile)) {
+      break;
+    }
+
+    sanitizedPath.push({ ...tile });
+    previousTile = tile;
+  }
+
+  return sanitizedPath;
 }
 
 function getTileTravelDistance(deltaX: number, deltaZ: number): number {
